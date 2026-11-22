@@ -117,8 +117,12 @@ class SchedulerService:
         else:
             final_title = raw_title
 
+        proj_record = db.query(Project).filter(Project.id == project_id).first()
+        item_user_id = proj_record.user_id if proj_record else None
+
         queue_item = UploadQueueItem(
             id=item_id,
+            user_id=item_user_id,
             project_id=project_id,
             clip_id=clip_id,
             title=final_title,

@@ -97,5 +97,37 @@ class TestAuditSuite(unittest.TestCase):
         if res_path.exists():
             res_path.unlink()
 
+    # =========================================================================
+    # 4. User Authentication & Multi-User Partitioning Tests
+    # =========================================================================
+    def test_auth_token_lifecycle(self):
+        """Must create valid signed auth token and verify user payload."""
+        from backend.app.main import create_auth_token, verify_auth_token
+        test_uid = "user_test_12345"
+        test_email = "creator@fragflash.ai"
+        token = create_auth_token(test_uid, test_email)
+        self.assertIsInstance(token, str)
+        self.assertIn(".", token)
+
+        payload = verify_auth_token(token)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["user_id"], test_uid)
+        self.assertEqual(payload["email"], test_email)
+
+        # Invalid token must fail gracefully
+        self.assertIsNone(verify_auth_token("invalid.token.signature"))
+
+    def test_password_hashing(self):
+        """Must produce deterministic HMAC hash with unique salt."""
+        from backend.app.main import hash_user_password
+        salt1 = "salt_alpha_1"
+        salt2 = "salt_beta_2"
+        h1 = hash_user_password("MySecurePass123", salt1)
+        h2 = hash_user_password("MySecurePass123", salt2)
+        h1_repeat = hash_user_password("MySecurePass123", salt1)
+
+        self.assertEqual(h1, h1_repeat)
+        self.assertNotEqual(h1, h2)
+
 if __name__ == "__main__":
     unittest.main()

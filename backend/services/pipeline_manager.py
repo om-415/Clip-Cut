@@ -328,6 +328,7 @@ class PipelineManager:
 
                         clip_record = Clip(
                             id=clip_res["clip_id"],
+                            user_id=project.user_id,
                             project_id=project_id,
                             highlight_id=hl.id,
                             file_path=clip_res["file_path"],

@@ -1,6 +1,134 @@
-import { VideoMetadata, Project, Clip } from './types';
+import { VideoMetadata, Project, Clip, User, AuthResponse, ClientCredentials } from './types';
 
 const API_BASE = '';
+
+export function getStoredAuthToken(): string | null {
+  try {
+    return localStorage.getItem('fragflash_auth_token');
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredAuthToken(token: string | null): void {
+  try {
+    if (token) {
+      localStorage.setItem('fragflash_auth_token', token);
+    } else {
+      localStorage.removeItem('fragflash_auth_token');
+    }
+  } catch {}
+}
+
+export function getStoredUser(): User | null {
+  try {
+    const raw = localStorage.getItem('fragflash_auth_user');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredUser(user: User | null): void {
+  try {
+    if (user) {
+      localStorage.setItem('fragflash_auth_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('fragflash_auth_user');
+    }
+  } catch {}
+}
+
+export function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
+  const token = getStoredAuthToken();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+// -------------------------------------------------------------
+// Authentication APIs
+// -------------------------------------------------------------
+
+export async function registerAccount(params: {
+  email: string;
+  password: string;
+  first_name?: string;
+  last_name?: string;
+}): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Registration failed' }));
+    throw new Error(err.detail || 'Failed to create account');
+  }
+  const data: AuthResponse = await res.json();
+  setStoredAuthToken(data.token);
+  setStoredUser(data.user);
+  return data;
+}
+
+export async function loginAccount(params: {
+  email: string;
+  password: string;
+}): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Login failed' }));
+    throw new Error(err.detail || 'Invalid email or password');
+  }
+  const data: AuthResponse = await res.json();
+  setStoredAuthToken(data.token);
+  setStoredUser(data.user);
+  return data;
+}
+
+export async function googleSignIn(params: {
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  google_id?: string;
+  avatar_url?: string;
+  credential?: string;
+}): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/google`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Google sign-in failed' }));
+    throw new Error(err.detail || 'Google authentication error');
+  }
+  const data: AuthResponse = await res.json();
+  setStoredAuthToken(data.token);
+  setStoredUser(data.user);
+  return data;
+}
+
+export async function fetchCurrentUser(): Promise<User> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Not authenticated');
+  const user: User = await res.json();
+  setStoredUser(user);
+  return user;
+}
+
+export function logoutAccount(): void {
+  setStoredAuthToken(null);
+  setStoredUser(null);
+}
 
 export async function fetchVideoMetadata(url: string): Promise<VideoMetadata> {
   const res = await fetch(`${API_BASE}/api/metadata`, {
@@ -30,7 +158,7 @@ export async function createProject(params: {
 }): Promise<Project> {
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(params),
   });
   if (!res.ok) {
@@ -41,13 +169,17 @@ export async function createProject(params: {
 }
 
 export async function listProjects(): Promise<Project[]> {
-  const res = await fetch(`${API_BASE}/api/projects`);
+  const res = await fetch(`${API_BASE}/api/projects`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to load projects');
   return res.json();
 }
 
 export async function getProject(projectId: string): Promise<Project> {
-  const res = await fetch(`${API_BASE}/api/projects/${projectId}`);
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to fetch project details');
   return res.json();
 }
@@ -61,7 +193,7 @@ export async function adjustHighlight(
 ): Promise<{ status: string }> {
   const res = await fetch(`${API_BASE}/api/highlights/${highlightId}/adjust`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ start_time: startTime, end_time: endTime, category, description }),
   });
   if (!res.ok) throw new Error('Failed to adjust highlight');
@@ -75,7 +207,7 @@ export async function generateClip(
 ): Promise<{ clip_id: string; clip_url: string }> {
   const res = await fetch(`${API_BASE}/api/highlights/${highlightId}/generate-clip`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ layout_mode: layoutMode, subtitle_style: subtitleStyle }),
   });
   if (!res.ok) throw new Error('Failed to render clip');
@@ -83,7 +215,9 @@ export async function generateClip(
 }
 
 export async function listAllClips(): Promise<Clip[]> {
-  const res = await fetch(`${API_BASE}/api/clips`);
+  const res = await fetch(`${API_BASE}/api/clips`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to load clips');
   return res.json();
 }
@@ -91,6 +225,7 @@ export async function listAllClips(): Promise<Clip[]> {
 export async function deleteProject(projectId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete project');
 }
@@ -112,7 +247,9 @@ export async function fetchAutomationStatus(): Promise<any> {
 }
 
 export async function fetchQueueItems(): Promise<any[]> {
-  const res = await fetch(`${API_BASE}/api/queue`);
+  const res = await fetch(`${API_BASE}/api/queue`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to load upload queue');
   return res.json();
 }
@@ -194,9 +331,9 @@ export async function saveClientCredentials(clientId: string, clientSecret: stri
   return res.json();
 }
 
-export async function fetchClientCredentials(): Promise<{ has_credentials: boolean; client_id: string; client_secret: string }> {
+export async function fetchClientCredentials(): Promise<ClientCredentials> {
   const res = await fetch(`${API_BASE}/api/youtube/client-credentials`);
-  if (!res.ok) return { has_credentials: false, client_id: '', client_secret: '' };
+  if (!res.ok) return { has_credentials: false, has_secret: false, client_id: '', client_secret: '' };
   return res.json();
 }
 

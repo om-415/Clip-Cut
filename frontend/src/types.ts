@@ -117,6 +117,14 @@ export interface YouTubeAccountInfo {
   is_active: boolean;
 }
 
+export interface ClientCredentials {
+  has_credentials: boolean;
+  has_secret?: boolean;
+  client_id: string;
+  client_secret: string;
+  client_secret_masked?: string;
+}
+
 export interface PublishingSettingsData {
   publishing_mode: 'full_auto' | 'review_before_publish' | 'generate_only';
   frequency: 'daily' | 'every_12h' | 'every_2_days' | 'custom';
@@ -212,4 +220,19 @@ export interface ClipEditParams {
   subtitle_outline_color: string;
   subtitle_has_box_bg: boolean;
   subtitle_position: 'bottom' | 'middle' | 'top';
+}
+
+export interface User {
+  id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  auth_provider?: string;
+  avatar_url?: string;
+}
+
+export interface AuthResponse {
+  status: string;
+  token: string;
+  user: User;
 }

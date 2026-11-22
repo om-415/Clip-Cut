@@ -3,10 +3,32 @@ from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, 
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    first_name = Column(String(100), default="")
+    last_name = Column(String(100), default="")
+    hashed_password = Column(String(255), nullable=True)  # Nullable for Google OAuth users
+    salt = Column(String(64), nullable=True)
+    auth_provider = Column(String(50), default="email")   # "email", "google"
+    google_id = Column(String(255), nullable=True, index=True)
+    avatar_url = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    projects = relationship("Project", back_populates="user")
+    clips = relationship("Clip", back_populates="user")
+
+
 class Project(Base):
     __tablename__ = "projects"
 
     id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     title = Column(String(255), default="Untitled Video")
     source_type = Column(String(50), default="youtube")  # "youtube" or "local"
     source_url = Column(Text, nullable=True)
@@ -23,6 +45,7 @@ class Project(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    user = relationship("User", back_populates="projects")
     highlights = relationship("Highlight", back_populates="project", cascade="all, delete-orphan")
     clips = relationship("Clip", back_populates="project", cascade="all, delete-orphan")
 
@@ -62,6 +85,7 @@ class Clip(Base):
     __tablename__ = "clips"
 
     id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     project_id = Column(String(36), ForeignKey("projects.id"), index=True)
     highlight_id = Column(String(36), ForeignKey("highlights.id"), nullable=True, index=True)
     file_path = Column(Text, nullable=False)
@@ -79,6 +103,7 @@ class Clip(Base):
     edit_settings_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    user = relationship("User", back_populates="clips")
     project = relationship("Project", back_populates="clips")
     highlight = relationship("Highlight", back_populates="clips")
 
@@ -112,6 +137,7 @@ class UploadQueueItem(Base):
     __tablename__ = "upload_queue"
 
     id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     project_id = Column(String(36), ForeignKey("projects.id"), index=True)
     clip_id = Column(String(36), ForeignKey("clips.id"), index=True)
     title = Column(String(255), nullable=False)
@@ -145,4 +171,3 @@ class PublishingSettings(Base):
     default_tags = Column(Text, default="[\"#Shorts\", \"#Gaming\"]")
     auto_schedule_enabled = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-

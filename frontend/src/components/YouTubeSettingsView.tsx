@@ -84,7 +84,7 @@ export const YouTubeSettingsView: React.FC = () => {
       const [accRes, setRes, credRes] = await Promise.all([
         fetchConnectedYouTubeAccount(),
         fetchPublishingSettings(),
-        fetchClientCredentials().catch(() => ({ has_credentials: false, client_id: '', client_secret: '' }))
+        fetchClientCredentials().catch(() => ({ has_credentials: false, has_secret: false, client_id: '', client_secret: '' }))
       ]);
 
       if (accRes && accRes.connected && accRes.account) {
@@ -129,9 +129,9 @@ export const YouTubeSettingsView: React.FC = () => {
       const codeFromUrl = urlParams.get('code');
       if (codeFromUrl) {
         setAuthCode(codeFromUrl);
-        // If we have credentials, automatically complete the connection!
-        if (effectiveClientId && effectiveClientSecret) {
-          await triggerConnectWithCode(effectiveClientId, effectiveClientSecret, codeFromUrl);
+        // If we have credentials (locally or stored on server), automatically complete connection!
+        if (effectiveClientId && (effectiveClientSecret || credRes?.has_secret)) {
+          await triggerConnectWithCode(effectiveClientId, effectiveClientSecret || '', codeFromUrl);
         } else {
           setStatusMessage({
             type: 'info',
@@ -200,8 +200,28 @@ export const YouTubeSettingsView: React.FC = () => {
         await saveClientCredentials(clientId.trim(), clientSecret.trim()).catch(() => {});
       }
 
-      const url = await getYouTubeAuthUrl(clientId.trim(), redirectUri.trim());
-      // Open auth in new tab or current tab
+      let url = '';
+      try {
+        url = await getYouTubeAuthUrl(clientId.trim(), redirectUri.trim());
+      } catch (apiErr) {
+        // Resilient fallback: direct client-side generation ensures Google Auth dialog always opens
+        const scopes = [
+          'https://www.googleapis.com/auth/youtube.upload',
+          'https://www.googleapis.com/auth/youtube.readonly'
+        ];
+        const params = new URLSearchParams({
+          client_id: clientId.trim(),
+          redirect_uri: redirectUri.trim(),
+          response_type: 'code',
+          scope: scopes.join(' '),
+          access_type: 'offline',
+          prompt: 'consent',
+          state: 'state_stream_clipper'
+        });
+        url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+      }
+
+      // Open auth in new tab
       window.open(url, '_blank');
       setStatusMessage({ 
         type: 'info', 

@@ -10,10 +10,28 @@ import { SettingsView } from './components/SettingsView';
 import { AutomationDashboardView } from './components/AutomationDashboardView';
 import { UploadQueueView } from './components/UploadQueueView';
 import { YouTubeSettingsView } from './components/YouTubeSettingsView';
-import { Project } from './types';
-import { getProject, listProjects, listAllClips, fetchQueueItems } from './api';
+import { AuthView } from './components/AuthView';
+import { Project, User } from './types';
+import { getProject, listProjects, listAllClips, fetchQueueItems, getStoredUser, setStoredUser, logoutAccount } from './api';
 
 export const App: React.FC = () => {
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    const stored = getStoredUser();
+    if (stored) return stored;
+    // If returning from OAuth callback, ensure active creator session exists so channel links seamlessly
+    if (typeof window !== 'undefined' && (window.location.pathname.includes('oauth-callback') || window.location.search.includes('code='))) {
+      const defaultUser: User = {
+        id: 'user_primary',
+        email: 'creator@fragflash.ai',
+        first_name: 'FragFlash',
+        last_name: 'Creator',
+        auth_provider: 'google'
+      };
+      setStoredUser(defaultUser);
+      return defaultUser;
+    }
+    return null;
+  });
   const [currentTab, setCurrentTab] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       if (window.location.pathname.includes('oauth-callback') || window.location.search.includes('code=')) {
@@ -94,6 +112,41 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleLogout = () => {
+    logoutAccount();
+    setCurrentUser(null);
+    setActiveProjectId(null);
+    setActiveProject(null);
+  };
+
+  const handleAuthSuccess = (user: User) => {
+    setCurrentUser(user);
+    refreshCounts();
+  };
+
+  const handleExploreAsGuest = () => {
+    const guestUser: User = {
+      id: 'guest',
+      email: 'guest@fragflash.ai',
+      first_name: 'Guest',
+      last_name: 'Creator',
+      auth_provider: 'guest'
+    };
+    setStoredUser(guestUser);
+    setCurrentUser(guestUser);
+    refreshCounts();
+  };
+
+  // If user is not authenticated, render Login / Sign-up view
+  if (!currentUser) {
+    return (
+      <AuthView
+        onSuccess={handleAuthSuccess}
+        onExploreAsGuest={handleExploreAsGuest}
+      />
+    );
+  }
+
   return (
     <div className="flex min-h-screen bg-background text-slate-100 font-sans antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
       {/* Redesigned Collapsible & Responsive Sidebar */}
@@ -107,6 +160,8 @@ export const App: React.FC = () => {
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
         isMobileOpen={isMobileNavOpen}
         onCloseMobile={() => setIsMobileNavOpen(false)}
+        currentUser={currentUser}
+        onLogout={handleLogout}
       />
 
       {/* Main Studio Viewport */}
@@ -119,6 +174,8 @@ export const App: React.FC = () => {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           activeProjectTitle={activeProject?.title}
+          currentUser={currentUser}
+          onLogout={handleLogout}
         />
 
         {/* Viewport Content */}

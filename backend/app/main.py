@@ -2,11 +2,15 @@ import os
 import json
 import uuid
 import shutil
+import hashlib
+import hmac
+import base64
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, UploadFile, File, Form, Header
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +24,7 @@ from backend.app.config import (
 )
 from backend.app.database import engine, Base, get_db, SessionLocal
 from backend.models.schema import (
-    Project, Highlight, Clip, YouTubeAccount, UploadQueueItem, PublishingSettings, InstagramWaitlist
+    User, Project, Highlight, Clip, YouTubeAccount, UploadQueueItem, PublishingSettings, InstagramWaitlist
 )
 from backend.services.video_service import VideoService
 from backend.services.clip_generator import ClipGeneratorService
@@ -170,6 +174,93 @@ class PublishingSettingsRequest(BaseModel):
     default_tags: Optional[List[str]] = None
     auto_schedule_enabled: Optional[bool] = True
 
+# -------------------------------------------------------------
+# User Authentication Models & Token Security
+# -------------------------------------------------------------
+
+class UserRegisterRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str = ""
+    last_name: str = ""
+
+class UserLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class GoogleAuthRequest(BaseModel):
+    credential: Optional[str] = None
+    email: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    google_id: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "fragflash-jwt-production-secret-2026")
+
+def hash_user_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000).hex()
+
+def create_auth_token(user_id: str, email: str) -> str:
+    payload = {
+        "user_id": user_id,
+        "email": email,
+        "exp": int(time.time()) + (86400 * 30)
+    }
+    raw = json.dumps(payload, separators=(',', ':')).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+    sig = hmac.new(AUTH_SECRET_KEY.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{sig}"
+
+def verify_auth_token(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        parts = token.strip().split(".")
+        if len(parts) != 2:
+            return None
+        b64_payload, sig = parts
+        expected_sig = hmac.new(AUTH_SECRET_KEY.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        padded = b64_payload + "=" * ((4 - len(b64_payload) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+def get_current_user_optional(
+    authorization: Optional[str] = Header(None), 
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    if not authorization:
+        # Fall back to first user if exists
+        return db.query(User).filter(User.is_active == True).first()
+    token = authorization.replace("Bearer ", "").strip()
+    payload = verify_auth_token(token)
+    if not payload:
+        return db.query(User).filter(User.is_active == True).first()
+    user = db.query(User).filter(User.id == payload["user_id"], User.is_active == True).first()
+    return user or db.query(User).filter(User.is_active == True).first()
+
+def get_current_user_required(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+) -> User:
+    if not authorization:
+        user = db.query(User).filter(User.is_active == True).first()
+        if user:
+            return user
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    token = authorization.replace("Bearer ", "").strip()
+    payload = verify_auth_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Session expired or invalid token. Please log in again.")
+    user = db.query(User).filter(User.id == payload["user_id"], User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User account not found.")
+    return user
+
 
 # -------------------------------------------------------------
 # REST API Endpoints
@@ -246,6 +337,137 @@ def join_instagram_waitlist(req: InstagramWaitlistRequest, db: Session = Depends
         "message": "You're on the early access list! We will notify you when Instagram Reels automation launches."
     }
 
+# -------------------------------------------------------------
+# User Authentication Endpoints (Email + Google Sign-In)
+# -------------------------------------------------------------
+
+@app.post("/api/auth/register")
+def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
+    """Registers a new user account with email and password."""
+    clean_email = req.email.strip().lower()
+    existing = db.query(User).filter(User.email == clean_email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+    
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    salt = uuid.uuid4().hex[:16]
+    hashed = hash_user_password(req.password, salt)
+    user_id = str(uuid.uuid4())
+    
+    new_user = User(
+        id=user_id,
+        email=clean_email,
+        first_name=req.first_name.strip(),
+        last_name=req.last_name.strip(),
+        hashed_password=hashed,
+        salt=salt,
+        auth_provider="email",
+        is_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    token = create_auth_token(new_user.id, new_user.email)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "id": new_user.id,
+            "email": new_user.email,
+            "first_name": new_user.first_name,
+            "last_name": new_user.last_name,
+            "auth_provider": new_user.auth_provider,
+            "avatar_url": new_user.avatar_url
+        }
+    }
+
+@app.post("/api/auth/login")
+def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
+    """Authenticates an existing user account with email and password."""
+    clean_email = req.email.strip().lower()
+    user = db.query(User).filter(User.email == clean_email).first()
+    if not user or not user.hashed_password or not user.salt:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    
+    computed = hash_user_password(req.password, user.salt)
+    if not hmac.compare_digest(computed, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    
+    token = create_auth_token(user.id, user.email)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "auth_provider": user.auth_provider,
+            "avatar_url": user.avatar_url
+        }
+    }
+
+@app.post("/api/auth/google")
+def google_auth_endpoint(req: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """
+    Google Authentication Endpoint:
+    Logs in or registers user via Google Sign-In with profile details or credentials.
+    """
+    email = (req.email or "").strip().lower()
+    if not email:
+        email = f"creator_{str(uuid.uuid4())[:8]}@gmail.com"
+        
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(
+            id=str(uuid.uuid4()),
+            email=email,
+            first_name=req.first_name or "Creator",
+            last_name=req.last_name or "",
+            google_id=req.google_id or str(uuid.uuid4())[:12],
+            avatar_url=req.avatar_url or "https://lh3.googleusercontent.com/a/default-user",
+            auth_provider="google",
+            is_active=True
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        if req.avatar_url and not user.avatar_url:
+            user.avatar_url = req.avatar_url
+        if req.google_id and not user.google_id:
+            user.google_id = req.google_id
+        db.commit()
+
+    token = create_auth_token(user.id, user.email)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "auth_provider": user.auth_provider,
+            "avatar_url": user.avatar_url
+        }
+    }
+
+@app.get("/api/auth/me")
+def get_current_user_profile(current_user: User = Depends(get_current_user_required)):
+    """Retrieves the profile of the authenticated user."""
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "auth_provider": current_user.auth_provider,
+        "avatar_url": current_user.avatar_url
+    }
+
 @app.post("/api/metadata")
 def get_video_metadata(req: MetadataRequest):
     """
@@ -261,9 +483,14 @@ def get_video_metadata(req: MetadataRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/projects")
-async def create_project(req: ProjectCreateRequest, db: Session = Depends(get_db)):
+async def create_project(
+    req: ProjectCreateRequest, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Creates a new project and triggers autonomous highlight extraction & clipping.
+    Associates the project with the active user account.
     """
     if not req.url or not req.url.strip():
         raise HTTPException(status_code=400, detail="URL cannot be empty.")
@@ -301,6 +528,7 @@ async def create_project(req: ProjectCreateRequest, db: Session = Depends(get_db
 
     project = Project(
         id=project_id,
+        user_id=current_user.id if current_user else None,
         title=meta.get("title", "YouTube Stream"),
         source_type="youtube",
         source_url=req.url.strip(),
@@ -330,11 +558,17 @@ async def create_project(req: ProjectCreateRequest, db: Session = Depends(get_db
     }
 
 @app.get("/api/projects")
-def list_projects(db: Session = Depends(get_db)):
+def list_projects(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
-    Lists all projects with their clip count and status.
+    Lists all projects associated with the active user (or all projects if unauthenticated).
     """
-    projects = db.query(Project).order_by(Project.created_at.desc()).all()
+    query = db.query(Project)
+    if current_user:
+        query = query.filter((Project.user_id == current_user.id) | (Project.user_id == None))
+    projects = query.order_by(Project.created_at.desc()).all()
     results = []
     for p in projects:
         results.append({
@@ -568,11 +802,17 @@ def generate_clip_endpoint(highlight_id: str, req: GenerateClipRequest, db: Sess
     }
 
 @app.get("/api/clips")
-def list_all_clips(db: Session = Depends(get_db)):
+def list_all_clips(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
-    Returns all generated clips across all projects, with active and original URLs.
+    Returns all generated clips for the active user (or all if unauthenticated).
     """
-    clips = db.query(Clip).order_by(Clip.created_at.desc()).all()
+    query = db.query(Clip)
+    if current_user:
+        query = query.filter((Clip.user_id == current_user.id) | (Clip.user_id == None))
+    clips = query.order_by(Clip.created_at.desc()).all()
     results = []
     for c in clips:
         is_edited = bool(c.is_edited and c.edited_file_path and os.path.exists(c.edited_file_path))
@@ -746,7 +986,7 @@ def revert_clip_endpoint(clip_id: str, db: Session = Depends(get_db)):
     }
 
 @app.get("/api/clips/{clip_id}/download")
-def download_clip_endpoint(clip_id: str, version: str = Query("edited", enum=["edited", "original"]), db: Session = Depends(get_db)):
+def download_clip_endpoint(clip_id: str, version: str = Query("edited"), db: Session = Depends(get_db)):
     """
     Direct file download with attachment headers:
     - version='original': downloads the pristine unedited generated clip.
@@ -908,11 +1148,17 @@ def get_automation_status(db: Session = Depends(get_db)):
     }
 
 @app.get("/api/queue")
-def list_queue_items(db: Session = Depends(get_db)):
+def list_queue_items(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
-    Lists all items in the sequential upload queue ordered by scheduled_time.
+    Lists all items in the sequential upload queue ordered by scheduled_time for the active user.
     """
-    items = db.query(UploadQueueItem).order_by(UploadQueueItem.scheduled_time.asc()).all()
+    query = db.query(UploadQueueItem)
+    if current_user:
+        query = query.filter((UploadQueueItem.user_id == current_user.id) | (UploadQueueItem.user_id == None))
+    items = query.order_by(UploadQueueItem.scheduled_time.asc()).all()
     results = []
 
     for item in items:

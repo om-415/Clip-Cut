@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Search, PlusCircle, Menu, Wifi, WifiOff, Youtube } from 'lucide-react';
+import { Search, PlusCircle, Menu, Wifi, WifiOff, Youtube, LogOut } from 'lucide-react';
 import { fetchConnectivity, fetchConnectedYouTubeAccount } from '../api';
+import { User } from '../types';
 
 interface HeaderProps {
   currentTab: string;
@@ -9,6 +10,8 @@ interface HeaderProps {
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
   activeProjectTitle?: string | null;
+  currentUser?: User | null;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,6 +21,8 @@ export const Header: React.FC<HeaderProps> = ({
   searchQuery = '',
   onSearchChange,
   activeProjectTitle,
+  currentUser,
+  onLogout,
 }) => {
   const [isOnline, setIsOnline] = useState(true);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
@@ -152,6 +157,38 @@ export const Header: React.FC<HeaderProps> = ({
             <PlusCircle className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">New Stream</span>
           </button>
+        )}
+
+        {/* User Account / Profile Pill */}
+        {currentUser && (
+          <div className="flex items-center gap-2 pl-1 border-l border-border-subtle">
+            <div 
+              title={`Logged in as ${currentUser.first_name || ''} (${currentUser.email})`}
+              className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-surface-secondary border border-border-subtle text-xs"
+            >
+              {currentUser.avatar_url ? (
+                <img src={currentUser.avatar_url} alt="" className="w-5 h-5 rounded-full object-cover" />
+              ) : (
+                <span className="w-5 h-5 rounded-full bg-indigo-600/30 text-indigo-300 font-bold flex items-center justify-center text-[10px]">
+                  {(currentUser.first_name?.[0] || currentUser.email[0]).toUpperCase()}
+                </span>
+              )}
+              <span className="text-slate-200 font-medium max-w-[100px] truncate hidden md:inline">
+                {currentUser.first_name || currentUser.email.split('@')[0]}
+              </span>
+            </div>
+
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                title="Log out"
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors border border-transparent hover:border-rose-500/20"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         )}
 
         {/* Studio badge */}

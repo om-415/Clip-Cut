@@ -10,8 +10,10 @@ import {
   X,
   Zap,
   Clock,
-  Youtube
+  Youtube,
+  LogOut
 } from 'lucide-react';
+import { User } from '../types';
 
 interface NavItem {
   id: string;
@@ -31,6 +33,8 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
+  currentUser?: User | null;
+  onLogout?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -43,6 +47,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   isMobileOpen,
   onCloseMobile,
+  currentUser,
+  onLogout,
 }) => {
   const workspaceItems: NavItem[] = [
     { 
@@ -231,6 +237,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           <div className="flex justify-center p-2" title="Engine Active: 12th Gen Intel CPU">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" />
+          </div>
+        )}
+
+        {/* User Account / Logout Card */}
+        {currentUser && !isCollapsed && (
+          <div className="p-2.5 bg-surface-secondary/70 border border-border-subtle rounded-xl flex items-center justify-between">
+            <div className="flex items-center gap-2 overflow-hidden">
+              {currentUser.avatar_url ? (
+                <img src={currentUser.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover shrink-0" />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-indigo-600/30 text-indigo-300 font-bold flex items-center justify-center text-xs shrink-0">
+                  {(currentUser.first_name?.[0] || currentUser.email[0]).toUpperCase()}
+                </div>
+              )}
+              <div className="overflow-hidden">
+                <p className="text-xs font-semibold text-slate-200 truncate leading-tight">
+                  {currentUser.first_name || currentUser.email.split('@')[0]}
+                </p>
+                <p className="text-[10px] text-slate-400 truncate leading-tight">
+                  {currentUser.email}
+                </p>
+              </div>
+            </div>
+
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                title="Log out"
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         )}
 
