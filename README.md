@@ -1,8 +1,8 @@
-# FragFlash AI Stream Clipper 🎬⚡
+# ClipCut AI Studio 🎬⚡
 
 **Intelligent Autonomous AI Video Clipping & YouTube Shorts Studio**
 
-FragFlash AI Stream Clipper transforms long gaming livestreams and YouTube videos into high-engagement **1080x1920 (9:16) vertical short-form clips** with burned-in subtitles, autonomous metadata generation, and scheduled YouTube Shorts publishing.
+ClipCut transforms long gaming livestreams and YouTube videos into high-engagement **1080x1920 (9:16) vertical short-form clips** with burned-in subtitles, autonomous metadata generation, and scheduled YouTube Shorts publishing.
 
 ---
 

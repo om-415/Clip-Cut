@@ -72,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
       case 'settings':
         return 'Engine & Diagnostics';
       default:
-        return 'AI Stream Clipper';
+        return 'ClipCut Studio';
     }
   };
 

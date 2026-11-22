@@ -89,7 +89,7 @@ class SystemInfoService:
 
         return {
             "application": {
-                "name": "FragFlash AI Stream Clipper",
+                "name": "ClipCut AI Stream Studio",
                 "version": "1.0.0-beta",
                 "processing_mode": "Local Machine Engine",
                 "engine_status": "Ready",

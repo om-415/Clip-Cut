@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title FragFlash AI Stream Clipper - Production Launcher
+title ClipCut - Production Launcher
 
 echo ==============================================================================
-echo       FRAGFLASH AI STREAM CLIPPER - PRODUCTION SYSTEM LAUNCHER
+echo       CLIPCUT - AUTONOMOUS AI VIDEO CLIPPING & SHORTS STUDIO
 echo ==============================================================================
 echo.
 
@@ -40,11 +40,11 @@ if not exist "logs" mkdir logs
 
 :: 5. Launch Backend in Background
 echo [1/2] Starting FastAPI Backend on http://localhost:8000...
-start "FragFlash Backend API" /min cmd /c "cd /d "%~dp0" && .venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000"
+start "ClipCut Backend API" /min cmd /c "cd /d "%~dp0" && .venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000"
 
 :: 6. Launch Frontend Preview Server
 echo [2/2] Starting Frontend Studio on http://localhost:3000...
-start "FragFlash Frontend Studio" /min cmd /c "cd /d "%~dp0\frontend" && npm run preview -- --port 3000 --host 127.0.0.1"
+start "ClipCut Frontend Studio" /min cmd /c "cd /d "%~dp0\frontend" && npm run preview -- --port 3000 --host 127.0.0.1"
 
 :: 7. Wait and Open Browser
 timeout /t 3 /nobreak >nul

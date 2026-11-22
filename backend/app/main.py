@@ -39,7 +39,7 @@ from backend.services.clip_editor_service import ClipEditorService
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="AI Stream Clipper API",
+    title="ClipCut API",
     version="1.0.0",
     description="Automated AI-Powered Stream Clipping and Vertical Video Engine"
 )
@@ -271,7 +271,7 @@ def health_check():
     """Liveness probe: returns 200 when backend HTTP process is active."""
     return {
         "status": "healthy",
-        "service": "FragFlash AI Stream Clipper",
+        "service": "ClipCut AI Stream Studio",
         "version": "1.0.0-beta",
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }

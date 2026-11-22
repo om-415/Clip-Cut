@@ -22,8 +22,8 @@ export const App: React.FC = () => {
     if (typeof window !== 'undefined' && (window.location.pathname.includes('oauth-callback') || window.location.search.includes('code='))) {
       const defaultUser: User = {
         id: 'user_primary',
-        email: 'creator@fragflash.ai',
-        first_name: 'FragFlash',
+        email: 'creator@clipcut.ai',
+        first_name: 'ClipCut',
         last_name: 'Creator',
         auth_provider: 'google'
       };
@@ -127,8 +127,8 @@ export const App: React.FC = () => {
   const handleExploreAsGuest = () => {
     const guestUser: User = {
       id: 'guest',
-      email: 'guest@fragflash.ai',
-      first_name: 'Guest',
+      email: 'guest@clipcut.ai',
+      first_name: 'ClipCut',
       last_name: 'Creator',
       auth_provider: 'guest'
     };

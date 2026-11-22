@@ -1,6 +1,5 @@
 import React from 'react';
 import { 
-  Film, 
   PlusCircle, 
   FolderGit2, 
   Video, 
@@ -162,18 +161,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Brand Header */}
         <div className={`p-5 border-b border-border-subtle flex items-center justify-between ${isCollapsed ? 'justify-center px-3' : ''}`}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white flex items-center justify-center shadow-lg shadow-indigo-600/20 shrink-0">
-              <Film className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-red-600 via-rose-600 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-red-600/20 shrink-0 overflow-hidden border border-red-500/30">
+              <img src="/clipcut-hero.jpg" alt="ClipCut" className="w-full h-full object-cover" />
             </div>
             {!isCollapsed && (
               <div className="overflow-hidden">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-bold text-sm tracking-tight text-slate-100">AI Stream Clipper</span>
-                  <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    PRO
+                  <span className="font-extrabold text-base tracking-tight text-white bg-gradient-to-r from-white via-slate-100 to-red-300 bg-clip-text text-transparent">ClipCut</span>
+                  <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">
+                    AI
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-500 truncate">Autonomous Content Engine</p>
+                <p className="text-[11px] text-slate-400 truncate">Autonomous Video Engine</p>
               </div>
             )}
           </div>
