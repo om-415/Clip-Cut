@@ -1,0 +1,31 @@
+services:
+  fragflash-clipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fragflash-ai-clipper
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - DEBUG=False
+      - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000
+    volumes:
+      - clips_data:/app/clips
+      - downloads_data:/app/downloads
+      - models_data:/app/models
+      - app_db:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  clips_data:
+  downloads_data:
+  models_data:
+  app_db:
