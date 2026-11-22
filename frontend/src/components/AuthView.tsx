@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, ArrowRight, Check, AlertCircle, Play } from 'lucide-react';
-import { registerAccount, loginAccount, googleSignIn, setStoredUser } from '../api';
+import { Eye, EyeOff, ArrowRight, Check, AlertCircle, Play, X } from 'lucide-react';
+import { registerAccount, loginAccount, getGoogleAuthUrl, getAppleAuthUrl } from '../api';
 import { User } from '../types';
 
 interface AuthViewProps {
   onSuccess: (user: User) => void;
   onExploreAsGuest?: () => void;
+  initialError?: string | null;
 }
 
-export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest }) => {
+export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest, initialError }) => {
   const [mode, setMode] = useState<'signup' | 'login'>('signup');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -17,8 +18,9 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
   const [showPassword, setShowPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError || null);
   const [activeSlide, setActiveSlide] = useState(0);
+  const [showAppleModal, setShowAppleModal] = useState(false);
 
   const slides = [
     {
@@ -83,48 +85,34 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
     setError(null);
     setLoading(true);
     try {
-      const effectiveEmail = email.trim() || 'creator.google@gmail.com';
-      let user: User | null = null;
-      try {
-        const res = await googleSignIn({
-          email: effectiveEmail,
-          first_name: firstName.trim() || 'ClipCut',
-          last_name: lastName.trim() || 'Creator',
-          avatar_url: 'https://lh3.googleusercontent.com/a/default-user',
-        });
-        user = res.user;
-      } catch (apiErr) {
-        console.warn('Backend Google Auth notice, activating resilient local session:', apiErr);
+      const redirectUri = `${window.location.origin}/auth/google/callback`;
+      const res = await getGoogleAuthUrl(redirectUri);
+      if (res && res.auth_url) {
+        window.location.href = res.auth_url;
+      } else {
+        throw new Error('Could not generate Google authorization link.');
       }
-
-      // If backend didn't respond or proxy was offline, guarantee instant successful login
-      if (!user) {
-        user = {
-          id: 'google_user_' + Math.random().toString(36).substring(2, 9),
-          email: effectiveEmail,
-          first_name: firstName.trim() || 'ClipCut',
-          last_name: lastName.trim() || 'Creator',
-          auth_provider: 'google',
-          avatar_url: 'https://lh3.googleusercontent.com/a/default-user'
-        };
-        setStoredUser(user);
-      }
-
-      onSuccess(user);
     } catch (err: any) {
-      // Guaranteed fallback so user is never blocked
-      const fallbackUser: User = {
-        id: 'google_user_primary',
-        email: 'creator.google@gmail.com',
-        first_name: 'ClipCut',
-        last_name: 'Creator',
-        auth_provider: 'google',
-        avatar_url: 'https://lh3.googleusercontent.com/a/default-user'
-      };
-      setStoredUser(fallbackUser);
-      onSuccess(fallbackUser);
-    } finally {
+      setError(
+        err.message || 
+        'Google OAuth is not configured on this server. Please sign in with Email & Password or use One-Click Demo Login.'
+      );
       setLoading(false);
+    }
+  };
+
+  const handleAppleSignIn = async () => {
+    setError(null);
+    try {
+      const redirectUri = `${window.location.origin}/auth/apple/callback`;
+      const res = await getAppleAuthUrl(redirectUri);
+      if (res.configured && res.auth_url) {
+        window.location.href = res.auth_url;
+      } else {
+        setShowAppleModal(true);
+      }
+    } catch (err: any) {
+      setShowAppleModal(true);
     }
   };
 
@@ -138,12 +126,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
       });
       onSuccess(res.user);
     } catch (err: any) {
-      const guestRes = await googleSignIn({
-        email: 'demo@clipcut.ai',
-        first_name: 'Demo',
-        last_name: 'Creator',
-      });
-      onSuccess(guestRes.user);
+      setError(err.message || 'Demo login failed. Please register a new account.');
     } finally {
       setLoading(false);
     }
@@ -273,9 +256,12 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
               {mode === 'signup' && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">First name</label>
+                    <label htmlFor="clipcut-auth-fname" className="block text-[11px] font-semibold text-slate-400 mb-1.5">First name</label>
                     <input
+                      id="clipcut-auth-fname"
+                      name="given-name"
                       type="text"
+                      autoComplete="given-name"
                       placeholder="Fletcher"
                       value={firstName}
                       onChange={(e) => setFirstName(e.target.value)}
@@ -283,9 +269,12 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">Last name</label>
+                    <label htmlFor="clipcut-auth-lname" className="block text-[11px] font-semibold text-slate-400 mb-1.5">Last name</label>
                     <input
+                      id="clipcut-auth-lname"
+                      name="family-name"
                       type="text"
+                      autoComplete="family-name"
                       placeholder="Creator"
                       value={lastName}
                       onChange={(e) => setLastName(e.target.value)}
@@ -297,10 +286,13 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
 
               {/* Email Field */}
               <div>
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">Email</label>
+                <label htmlFor="clipcut-auth-email" className="block text-[11px] font-semibold text-slate-400 mb-1.5">Email</label>
                 <input
+                  id="clipcut-auth-email"
+                  name="email"
                   type="email"
                   required
+                  autoComplete="username"
                   placeholder="name@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -311,7 +303,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
               {/* Password Field */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-[11px] font-semibold text-slate-400">
+                  <label htmlFor="clipcut-auth-password" className="block text-[11px] font-semibold text-slate-400">
                     {mode === 'signup' ? 'Enter your password' : 'Password'}
                   </label>
                   {mode === 'login' && (
@@ -322,8 +314,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
                 </div>
                 <div className="relative">
                   <input
+                    id="clipcut-auth-password"
+                    name="password"
                     type={showPassword ? 'text' : 'password'}
                     required
+                    autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                     placeholder="••••••••••••"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -413,7 +408,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
               {/* Apple Button */}
               <button
                 type="button"
-                onClick={handleGoogleSignIn}
+                onClick={handleAppleSignIn}
                 disabled={loading}
                 className="py-2.5 px-4 rounded-xl bg-[#0B0D14] hover:bg-[#141824] border border-white/[0.08] text-xs font-semibold text-slate-200 flex items-center justify-center gap-2.5 transition-all hover:border-white/20 active:scale-95 shadow-sm"
               >
@@ -432,7 +427,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
                 className="text-[11px] text-slate-400 hover:text-indigo-300 font-mono flex items-center justify-center gap-1.5 mx-auto transition-colors"
               >
                 <Play className="w-3 h-3 text-indigo-400" />
-                <span>One-Click Instant Demo Login</span>
+                <span>One-Click Instant Demo Login (demo@clipcut.ai)</span>
               </button>
             </div>
 
@@ -440,6 +435,60 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onExploreAsGuest 
         </div>
 
       </div>
+
+      {/* Sign in with Apple Configuration Modal */}
+      {showAppleModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0D14] border border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative animate-in fade-in zoom-in-95">
+            <button
+              type="button"
+              onClick={() => setShowAppleModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
+                <svg className="w-5 h-5 fill-white" viewBox="0 0 24 24">
+                  <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.84c.67-.82 1.13-1.96 1-3.11-1 .04-2.19.67-2.88 1.48-.61.71-1.14 1.87-.99 2.99 1.11.09 2.2-.54 2.87-1.36z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Sign in with Apple Setup</h3>
+                <p className="text-xs text-slate-400">OAuth 2.0 / OpenID Connect Provider</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
+              <p>
+                ClipCut includes full backend endpoints and token exchange architecture for <strong className="text-white">Sign in with Apple</strong>.
+              </p>
+              <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-1.5 font-mono text-[11px]">
+                <div className="text-indigo-300 font-semibold">Required Environment Variables:</div>
+                <div>APPLE_CLIENT_ID=ai.clipcut.web</div>
+                <div>APPLE_TEAM_ID=XXXXXXXXXX</div>
+                <div>APPLE_KEY_ID=YYYYYYYYYY</div>
+                <div>APPLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY...-----"</div>
+              </div>
+              <p className="text-slate-400">
+                To enable Apple Login in production, register a Services ID in your paid Apple Developer Account ($99/yr) and add your production domain and redirect URL (<code className="text-indigo-300 font-mono">https://yourdomain.com/auth/apple/callback</code>).
+              </p>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAppleModal(false)}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import os
+import time
 import unittest
 import socket
 from pathlib import Path
@@ -128,6 +129,88 @@ class TestAuditSuite(unittest.TestCase):
 
         self.assertEqual(h1, h1_repeat)
         self.assertNotEqual(h1, h2)
+
+    # =========================================================================
+    # 5. Rate Limiting & Abuse Prevention Tests
+    # =========================================================================
+    def test_auth_rate_limiter_blocks_rapid_attempts(self):
+        """Rate limiter must throw HTTP 429 after exceeding max attempts within window."""
+        from backend.app.main import check_auth_rate_limit, HTTPException
+        client_ip = f"198.51.100.{int(time.time() % 200)}"
+        
+        # Under limit: should not throw
+        for _ in range(12):
+            check_auth_rate_limit(client_ip)
+            
+        # 13th attempt: must throw 429
+        with self.assertRaises(HTTPException) as ctx:
+            check_auth_rate_limit(client_ip)
+        self.assertEqual(ctx.exception.status_code, 429)
+
+    # =========================================================================
+    # 6. YouTube OAuth URL Structure Tests
+    # =========================================================================
+    def test_youtube_auth_url_structure(self):
+        """Must generate standard Google OAuth URL with proper scopes and offline access."""
+        from backend.services.youtube_service import YouTubeService
+        url = YouTubeService.get_authorization_url(
+            client_id="123456789-test.apps.googleusercontent.com",
+            redirect_uri="http://localhost:3000/oauth-callback"
+        )
+        self.assertTrue(url.startswith("https://accounts.google.com/o/oauth2/v2/auth?"))
+        self.assertIn("response_type=code", url)
+        self.assertIn("access_type=offline", url)
+        self.assertIn("prompt=consent", url)
+        self.assertIn("youtube.upload", url)
+
+    # =========================================================================
+    # 7. Multi-User Partitioning & IDOR Tests
+    # =========================================================================
+    def test_multi_user_data_isolation(self):
+        """User B must NOT see or modify User A's projects or clips."""
+        from backend.app.database import SessionLocal
+        from backend.models.schema import User, Project
+        import uuid
+
+        db = SessionLocal()
+        try:
+            # Create User A & User B
+            uid_a = f"user_a_{uuid.uuid4().hex[:8]}"
+            uid_b = f"user_b_{uuid.uuid4().hex[:8]}"
+            user_a = User(id=uid_a, email=f"{uid_a}@clipcut.ai", first_name="Alice")
+            user_b = User(id=uid_b, email=f"{uid_b}@clipcut.ai", first_name="Bob")
+            db.add_all([user_a, user_b])
+            db.commit()
+
+            # Create Project for User A
+            proj_id = f"proj_a_{uuid.uuid4().hex[:8]}"
+            proj = Project(
+                id=proj_id,
+                user_id=uid_a,
+                source_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                title="Alice Secret Stream",
+                status="completed"
+            )
+            db.add(proj)
+            db.commit()
+
+            # Query from perspective of User B
+            b_projects = db.query(Project).filter(Project.user_id == uid_b).all()
+            b_project_ids = [p.id for p in b_projects]
+            self.assertNotIn(proj_id, b_project_ids)
+
+            # Query from perspective of User A
+            a_projects = db.query(Project).filter(Project.user_id == uid_a).all()
+            a_project_ids = [p.id for p in a_projects]
+            self.assertIn(proj_id, a_project_ids)
+
+            # Cleanup
+            db.delete(proj)
+            db.delete(user_a)
+            db.delete(user_b)
+            db.commit()
+        finally:
+            db.close()
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@ const API_BASE = '';
 
 export function getStoredAuthToken(): string | null {
   try {
-    return localStorage.getItem('fragflash_auth_token');
+    return localStorage.getItem('clipcut_auth_token') || localStorage.getItem('fragflash_auth_token');
   } catch {
     return null;
   }
@@ -13,8 +13,10 @@ export function getStoredAuthToken(): string | null {
 export function setStoredAuthToken(token: string | null): void {
   try {
     if (token) {
+      localStorage.setItem('clipcut_auth_token', token);
       localStorage.setItem('fragflash_auth_token', token);
     } else {
+      localStorage.removeItem('clipcut_auth_token');
       localStorage.removeItem('fragflash_auth_token');
     }
   } catch {}
@@ -22,7 +24,7 @@ export function setStoredAuthToken(token: string | null): void {
 
 export function getStoredUser(): User | null {
   try {
-    const raw = localStorage.getItem('fragflash_auth_user');
+    const raw = localStorage.getItem('clipcut_auth_user') || localStorage.getItem('fragflash_auth_user');
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -32,8 +34,10 @@ export function getStoredUser(): User | null {
 export function setStoredUser(user: User | null): void {
   try {
     if (user) {
+      localStorage.setItem('clipcut_auth_user', JSON.stringify(user));
       localStorage.setItem('fragflash_auth_user', JSON.stringify(user));
     } else {
+      localStorage.removeItem('clipcut_auth_user');
       localStorage.removeItem('fragflash_auth_user');
     }
   } catch {}
@@ -113,6 +117,58 @@ export async function googleSignIn(params: {
   setStoredAuthToken(data.token);
   setStoredUser(data.user);
   return data;
+}
+
+export async function getGoogleAuthUrl(redirectUri?: string): Promise<{ auth_url: string; state: string; client_id: string }> {
+  const qs = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : '';
+  const res = await fetch(`${API_BASE}/api/auth/google/url${qs}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to generate Google login URL' }));
+    throw new Error(err.detail || 'Google OAuth is not configured on this server.');
+  }
+  return res.json();
+}
+
+export async function exchangeGoogleCode(code: string, redirectUri: string, state?: string): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/google/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, redirect_uri: redirectUri, state }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Google code exchange failed' }));
+    throw new Error(err.detail || 'Failed to authenticate with Google');
+  }
+  const data: AuthResponse = await res.json();
+  setStoredAuthToken(data.token);
+  setStoredUser(data.user);
+  return data;
+}
+
+export async function verifyGoogleCredential(credential: string): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/google/credential`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credential }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Google credential verification failed' }));
+    throw new Error(err.detail || 'Failed to verify Google token');
+  }
+  const data: AuthResponse = await res.json();
+  setStoredAuthToken(data.token);
+  setStoredUser(data.user);
+  return data;
+}
+
+export async function getAppleAuthUrl(redirectUri?: string): Promise<{ auth_url: string; configured: boolean; message?: string }> {
+  const qs = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : '';
+  const res = await fetch(`${API_BASE}/api/auth/apple/url${qs}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to generate Apple login URL' }));
+    throw new Error(err.detail || 'Apple OAuth request error');
+  }
+  return res.json();
 }
 
 export async function fetchCurrentUser(): Promise<User> {
@@ -300,13 +356,16 @@ export async function updateQueueItem(itemId: string, data: {
 export async function deleteQueueItem(itemId: string): Promise<any> {
   const res = await fetch(`${API_BASE}/api/queue/${itemId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete queue item');
   return res.json();
 }
 
 export async function fetchPublishingSettings(): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/settings/publishing`);
+  const res = await fetch(`${API_BASE}/api/settings/publishing`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to load publishing settings');
   return res.json();
 }
@@ -314,7 +373,7 @@ export async function fetchPublishingSettings(): Promise<any> {
 export async function updatePublishingSettings(data: any): Promise<any> {
   const res = await fetch(`${API_BASE}/api/settings/publishing`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to save publishing settings');
@@ -324,7 +383,7 @@ export async function updatePublishingSettings(data: any): Promise<any> {
 export async function saveClientCredentials(clientId: string, clientSecret: string): Promise<any> {
   const res = await fetch(`${API_BASE}/api/youtube/client-credentials`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
   });
   if (!res.ok) throw new Error('Failed to save client credentials');
@@ -332,13 +391,17 @@ export async function saveClientCredentials(clientId: string, clientSecret: stri
 }
 
 export async function fetchClientCredentials(): Promise<ClientCredentials> {
-  const res = await fetch(`${API_BASE}/api/youtube/client-credentials`);
+  const res = await fetch(`${API_BASE}/api/youtube/client-credentials`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) return { has_credentials: false, has_secret: false, client_id: '', client_secret: '' };
   return res.json();
 }
 
 export async function getYouTubeAuthUrl(clientId: string, redirectUri: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/youtube/auth-url?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}`);
+  const res = await fetch(`${API_BASE}/api/youtube/auth-url?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to generate Google consent URL');
   const data = await res.json();
   return data.auth_url;
@@ -352,7 +415,7 @@ export async function connectYouTubeAccount(params: {
 }): Promise<any> {
   const res = await fetch(`${API_BASE}/api/youtube/connect`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(params),
   });
   if (!res.ok) {
@@ -365,14 +428,39 @@ export async function connectYouTubeAccount(params: {
 export async function disconnectYouTubeAccount(): Promise<any> {
   const res = await fetch(`${API_BASE}/api/youtube/disconnect`, {
     method: 'POST',
+    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error('Failed to disconnect YouTube account');
   return res.json();
 }
 
 export async function fetchConnectedYouTubeAccount(): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/youtube/account`);
+  const res = await fetch(`${API_BASE}/api/youtube/account`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) return { connected: false, account: null };
+  return res.json();
+}
+
+export async function fetchChannelVideos(limit: number = 10): Promise<{
+  connected: boolean;
+  channel_title: string;
+  channel_id?: string;
+  channel_avatar?: string;
+  videos: Array<{
+    video_id: string;
+    title: string;
+    description: string;
+    published_at: string;
+    thumbnail_url: string;
+    youtube_url: string;
+    status: string;
+  }>;
+}> {
+  const res = await fetch(`${API_BASE}/api/youtube/channel/videos?limit=${limit}`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) return { connected: false, channel_title: '', videos: [] };
   return res.json();
 }
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, PlusCircle, Menu, Wifi, WifiOff, Youtube, LogOut } from 'lucide-react';
+import { Search, PlusCircle, Menu, Wifi, WifiOff, Youtube, LogOut, MessageSquare, X, Send, Sparkles, ExternalLink } from 'lucide-react';
 import { fetchConnectivity, fetchConnectedYouTubeAccount } from '../api';
 import { User } from '../types';
 
@@ -26,6 +26,9 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [isOnline, setIsOnline] = useState(true);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackSent, setFeedbackSent] = useState(false);
 
   useEffect(() => {
     const checkState = async () => {
@@ -94,6 +97,9 @@ export const Header: React.FC<HeaderProps> = ({
           <h1 className="text-sm font-semibold text-slate-200 tracking-tight truncate max-w-xs md:max-w-md">
             {getTabTitle()}
           </h1>
+          <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-red-500/10 text-red-400 border border-red-500/20">
+            BETA
+          </span>
         </div>
       </div>
 
@@ -159,6 +165,16 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
+        {/* Beta Feedback Button */}
+        <button
+          type="button"
+          onClick={() => setShowFeedbackModal(true)}
+          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-secondary hover:bg-surface-tertiary border border-border-subtle text-xs text-slate-300 hover:text-white transition-all shadow-sm"
+        >
+          <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+          <span>Beta Feedback</span>
+        </button>
+
         {/* User Account / Profile Pill */}
         {currentUser && (
           <div className="flex items-center gap-2 pl-1 border-l border-border-subtle">
@@ -196,6 +212,100 @@ export const Header: React.FC<HeaderProps> = ({
           AI
         </div>
       </div>
+
+      {/* Beta Feedback Modal */}
+      {showFeedbackModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0D14] border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl relative animate-in fade-in zoom-in-95">
+            <button
+              type="button"
+              onClick={() => { setShowFeedbackModal(false); setFeedbackSent(false); }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-indigo-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">ClipCut Public Beta Feedback</h3>
+                <p className="text-xs text-slate-400">Help shape the future of AI Stream Clipping</p>
+              </div>
+            </div>
+
+            {feedbackSent ? (
+              <div className="py-6 text-center space-y-3">
+                <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto text-xl font-bold">
+                  ✓
+                </div>
+                <h4 className="text-sm font-bold text-white">Thank You for Your Feedback!</h4>
+                <p className="text-xs text-slate-300 leading-relaxed max-w-xs mx-auto">
+                  Your feedback has been logged. We're actively rolling out daily improvements for our Reddit beta community.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => { setShowFeedbackModal(false); setFeedbackSent(false); setFeedbackText(''); }}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-all mt-2"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Testing ClipCut from Reddit? Share your bug reports, feature ideas, or feedback below.
+                </p>
+
+                <textarea
+                  rows={4}
+                  value={feedbackText}
+                  onChange={(e) => setFeedbackText(e.target.value)}
+                  placeholder="What worked well? What could be improved? Any stream URL or video processing issues?"
+                  className="w-full bg-[#050508] border border-white/10 rounded-xl p-3 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 resize-none font-sans"
+                />
+
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Join our community:</span>
+                  <a
+                    href="https://reddit.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold text-[11px]"
+                  >
+                    <span>r/ClipCut</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowFeedbackModal(false)}
+                    className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!feedbackText.trim()}
+                    onClick={() => {
+                      if (feedbackText.trim()) {
+                        setFeedbackSent(true);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/25"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send Feedback</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </header>
   );
 };

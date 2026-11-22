@@ -5,7 +5,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 class YouTubeService:
     OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -129,6 +129,62 @@ class YouTubeService:
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"Failed to fetch channel profile ({e.code}): {err_body}")
+
+    @classmethod
+    def get_channel_recent_videos(cls, access_token: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fetches the recent uploads from the authorized user's YouTube channel.
+        Uses channels.list(part=contentDetails, mine=true) -> playlistItems.list.
+        """
+        # Step 1: Get user's uploads playlist ID
+        ch_url = f"{cls.YOUTUBE_API_BASE}/channels?part=contentDetails,snippet&mine=true"
+        req = urllib.request.Request(
+            ch_url,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as res:
+                ch_data = json.loads(res.read().decode("utf-8"))
+                items = ch_data.get("items", [])
+                if not items:
+                    return []
+                uploads_id = items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+                if not uploads_id:
+                    return []
+        except Exception as e:
+            print(f"[YouTubeService] Channel contentDetails notice: {e}")
+            return []
+
+        # Step 2: Fetch playlist items (videos)
+        pl_url = f"{cls.YOUTUBE_API_BASE}/playlistItems?part=snippet,status&playlistId={uploads_id}&maxResults={max_results}"
+        pl_req = urllib.request.Request(
+            pl_url,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        try:
+            with urllib.request.urlopen(pl_req, timeout=12) as pl_res:
+                pl_data = json.loads(pl_res.read().decode("utf-8"))
+                videos = []
+                for item in pl_data.get("items", []):
+                    snippet = item.get("snippet", {})
+                    resource = snippet.get("resourceId", {})
+                    v_id = resource.get("videoId")
+                    if v_id:
+                        thumbs = snippet.get("thumbnails", {})
+                        thumb_url = thumbs.get("medium", {}).get("url") or thumbs.get("default", {}).get("url") or f"https://i.ytimg.com/vi/{v_id}/mqdefault.jpg"
+                        videos.append({
+                            "video_id": v_id,
+                            "title": snippet.get("title", ""),
+                            "description": snippet.get("description", ""),
+                            "published_at": snippet.get("publishedAt", ""),
+                            "thumbnail_url": thumb_url,
+                            "youtube_url": f"https://www.youtube.com/watch?v={v_id}",
+                            "status": item.get("status", {}).get("privacyStatus", "public")
+                        })
+                return videos
+        except Exception as e:
+            print(f"[YouTubeService] Playlist items fetch notice: {e}")
+            return []
 
     @classmethod
     def upload_short_resumable(

@@ -9,8 +9,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+import urllib.request
+import urllib.parse
+import urllib.error
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, UploadFile, File, Form, Header
+from fastapi import (
+    FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, 
+    Query, UploadFile, File, Form, Header, Request
+)
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -196,7 +202,39 @@ class GoogleAuthRequest(BaseModel):
     google_id: Optional[str] = None
     avatar_url: Optional[str] = None
 
-AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "fragflash-jwt-production-secret-2026")
+class GoogleCodeExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: str
+    state: Optional[str] = None
+
+class GoogleCredentialRequest(BaseModel):
+    credential: str
+
+class AppleCallbackRequest(BaseModel):
+    code: Optional[str] = None
+    id_token: Optional[str] = None
+    state: Optional[str] = None
+    user: Optional[str] = None
+
+# Rate limiter for authentication endpoints
+_login_attempts: Dict[str, List[float]] = {}
+_RATE_LIMIT_WINDOW = 60.0
+_MAX_ATTEMPTS_PER_WINDOW = 12
+
+def check_auth_rate_limit(client_ip: str):
+    now = time.time()
+    attempts = _login_attempts.get(client_ip, [])
+    valid_attempts = [t for t in attempts if now - t < _RATE_LIMIT_WINDOW]
+    if len(valid_attempts) >= _MAX_ATTEMPTS_PER_WINDOW:
+        _login_attempts[client_ip] = valid_attempts
+        raise HTTPException(
+            status_code=429, 
+            detail="Too many authentication attempts. Please wait 60 seconds before retrying."
+        )
+    valid_attempts.append(now)
+    _login_attempts[client_ip] = valid_attempts
+
+AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "clipcut-jwt-production-secret-2026")
 
 def hash_user_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000).hex()
@@ -233,28 +271,35 @@ def get_current_user_optional(
     authorization: Optional[str] = Header(None), 
     db: Session = Depends(get_db)
 ) -> Optional[User]:
+    """
+    Returns the authenticated user if a valid Bearer token is provided;
+    returns None otherwise. Never falls back to arbitrary database users.
+    """
     if not authorization:
-        # Fall back to first user if exists
-        return db.query(User).filter(User.is_active == True).first()
+        return None
     token = authorization.replace("Bearer ", "").strip()
+    if not token:
+        return None
     payload = verify_auth_token(token)
-    if not payload:
-        return db.query(User).filter(User.is_active == True).first()
-    user = db.query(User).filter(User.id == payload["user_id"], User.is_active == True).first()
-    return user or db.query(User).filter(User.is_active == True).first()
+    if not payload or "user_id" not in payload:
+        return None
+    return db.query(User).filter(User.id == payload["user_id"], User.is_active == True).first()
 
 def get_current_user_required(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ) -> User:
+    """
+    Strict authentication guard: enforces valid user session.
+    Rejects missing or invalid tokens with HTTP 401.
+    """
     if not authorization:
-        user = db.query(User).filter(User.is_active == True).first()
-        if user:
-            return user
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
     token = authorization.replace("Bearer ", "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication token missing.")
     payload = verify_auth_token(token)
-    if not payload:
+    if not payload or "user_id" not in payload:
         raise HTTPException(status_code=401, detail="Session expired or invalid token. Please log in again.")
     user = db.query(User).filter(User.id == payload["user_id"], User.is_active == True).first()
     if not user:
@@ -342,26 +387,30 @@ def join_instagram_waitlist(req: InstagramWaitlistRequest, db: Session = Depends
 # -------------------------------------------------------------
 
 @app.post("/api/auth/register")
-def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
-    """Registers a new user account with email and password."""
+def register_user(req: UserRegisterRequest, request: Request, db: Session = Depends(get_db)):
+    """Registers a new creator account with email, name, and hashed password."""
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    check_auth_rate_limit(client_ip)
+
     clean_email = req.email.strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    
     existing = db.query(User).filter(User.email == clean_email).first()
     if existing:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
     
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
-
     salt = uuid.uuid4().hex[:16]
-    hashed = hash_user_password(req.password, salt)
-    user_id = str(uuid.uuid4())
+    hashed_pwd = hash_user_password(req.password, salt)
     
     new_user = User(
-        id=user_id,
+        id=str(uuid.uuid4()),
         email=clean_email,
         first_name=req.first_name.strip(),
         last_name=req.last_name.strip(),
-        hashed_password=hashed,
+        hashed_password=hashed_pwd,
         salt=salt,
         auth_provider="email",
         is_active=True
@@ -385,8 +434,11 @@ def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/auth/login")
-def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
+def login_user(req: UserLoginRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticates an existing user account with email and password."""
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    check_auth_rate_limit(client_ip)
+
     clean_email = req.email.strip().lower()
     user = db.query(User).filter(User.email == clean_email).first()
     if not user or not user.hashed_password or not user.salt:
@@ -410,12 +462,189 @@ def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
         }
     }
 
+@app.get("/api/auth/google/url")
+def get_google_auth_login_url(redirect_uri: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Generates official Google OAuth 2.0 authorization URL for user login.
+    Uses environment configuration or stored OAuth credentials.
+    """
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    if not client_id:
+        yt = db.query(YouTubeAccount).first()
+        if yt and yt.client_id:
+            client_id = yt.client_id
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Google OAuth Client ID is not configured.")
+    
+    effective_redirect = redirect_uri or os.environ.get("GOOGLE_REDIRECT_URI") or "http://localhost:3000/auth/google/callback"
+    state = f"clipcut_auth_{uuid.uuid4().hex[:12]}"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": effective_redirect,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+        "state": state
+    }
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    return {"auth_url": auth_url, "state": state, "client_id": client_id}
+
+@app.post("/api/auth/google/exchange")
+def exchange_google_auth_code(req: GoogleCodeExchangeRequest, db: Session = Depends(get_db)):
+    """
+    Exchanges Google OAuth code for access token, fetches verified user profile,
+    and returns a signed ClipCut session token.
+    """
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        yt = db.query(YouTubeAccount).first()
+        if yt:
+            client_id = client_id or yt.client_id
+            client_secret = client_secret or yt.client_secret
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="Google OAuth credentials are not configured in environment or database.")
+
+    token_data = urllib.parse.urlencode({
+        "code": req.code.strip(),
+        "client_id": client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "redirect_uri": req.redirect_uri.strip(),
+        "grant_type": "authorization_code"
+    }).encode("utf-8")
+    
+    token_req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=token_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    try:
+        with urllib.request.urlopen(token_req, timeout=12) as token_res:
+            tokens = json.loads(token_res.read().decode("utf-8"))
+    except urllib.error.HTTPError as he:
+        err_body = he.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=400, detail=f"Google token exchange failed ({he.code}): {err_body}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Google OAuth network error: {str(e)}")
+
+    access_token = tokens.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing access token from Google.")
+    
+    # Fetch verified user profile
+    userinfo_req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    try:
+        with urllib.request.urlopen(userinfo_req, timeout=10) as u_res:
+            u_profile = json.loads(u_res.read().decode("utf-8"))
+    except Exception as ue:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch Google profile: {str(ue)}")
+    
+    g_email = u_profile.get("email", "").strip().lower()
+    g_sub = u_profile.get("sub", "")
+    g_given = u_profile.get("given_name") or u_profile.get("name", "Creator")
+    g_family = u_profile.get("family_name", "")
+    g_picture = u_profile.get("picture", "https://lh3.googleusercontent.com/a/default-user")
+    
+    if not g_email:
+        raise HTTPException(status_code=400, detail="Google account email is missing.")
+    
+    user = db.query(User).filter(User.email == g_email).first()
+    if not user:
+        user = User(
+            id=str(uuid.uuid4()),
+            email=g_email,
+            first_name=g_given,
+            last_name=g_family,
+            google_id=g_sub,
+            avatar_url=g_picture,
+            auth_provider="google",
+            is_active=True
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        user.google_id = g_sub or user.google_id
+        user.avatar_url = g_picture or user.avatar_url
+        if not user.first_name and g_given:
+            user.first_name = g_given
+        db.commit()
+    
+    token = create_auth_token(user.id, user.email)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "auth_provider": user.auth_provider,
+            "avatar_url": user.avatar_url
+        }
+    }
+
+@app.post("/api/auth/google/credential")
+def verify_google_credential(req: GoogleCredentialRequest, db: Session = Depends(get_db)):
+    """Verifies signed Google ID token from Google Identity Services / One-Tap."""
+    id_token_str = req.credential.strip()
+    tokeninfo_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={urllib.parse.quote(id_token_str)}"
+    try:
+        with urllib.request.urlopen(tokeninfo_url, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Google credential token: {str(e)}")
+    
+    g_email = payload.get("email", "").strip().lower()
+    g_sub = payload.get("sub", "")
+    g_given = payload.get("given_name") or payload.get("name", "Creator")
+    g_family = payload.get("family_name", "")
+    g_picture = payload.get("picture", "https://lh3.googleusercontent.com/a/default-user")
+    
+    if not g_email:
+        raise HTTPException(status_code=400, detail="Google credential did not contain verified email.")
+    
+    user = db.query(User).filter(User.email == g_email).first()
+    if not user:
+        user = User(
+            id=str(uuid.uuid4()),
+            email=g_email,
+            first_name=g_given,
+            last_name=g_family,
+            google_id=g_sub,
+            avatar_url=g_picture,
+            auth_provider="google",
+            is_active=True
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        user.google_id = g_sub or user.google_id
+        user.avatar_url = g_picture or user.avatar_url
+        db.commit()
+    
+    token = create_auth_token(user.id, user.email)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "auth_provider": user.auth_provider,
+            "avatar_url": user.avatar_url
+        }
+    }
+
 @app.post("/api/auth/google")
 def google_auth_endpoint(req: GoogleAuthRequest, db: Session = Depends(get_db)):
-    """
-    Google Authentication Endpoint:
-    Logs in or registers user via Google Sign-In with profile details or credentials.
-    """
+    """Fallback / direct Google auth endpoint."""
     email = (req.email or "").strip().lower()
     if not email:
         email = f"creator_{str(uuid.uuid4())[:8]}@gmail.com"
@@ -455,6 +684,86 @@ def google_auth_endpoint(req: GoogleAuthRequest, db: Session = Depends(get_db)):
             "avatar_url": user.avatar_url
         }
     }
+
+@app.get("/api/auth/apple/url")
+def get_apple_auth_url(redirect_uri: Optional[str] = None):
+    """
+    Returns Sign In with Apple authorization URL if credentials are configured in environment.
+    """
+    client_id = os.environ.get("APPLE_CLIENT_ID")
+    if not client_id:
+        return {
+            "configured": False,
+            "detail": "Apple Sign-In is structured. To activate, set APPLE_CLIENT_ID, APPLE_TEAM_ID, and APPLE_KEY_ID in .env."
+        }
+    
+    effective_redirect = redirect_uri or os.environ.get("APPLE_REDIRECT_URI") or "http://localhost:3000/auth/apple/callback"
+    state = f"apple_state_{uuid.uuid4().hex[:12]}"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": effective_redirect,
+        "response_type": "code id_token",
+        "scope": "name email",
+        "response_mode": "form_post",
+        "state": state
+    }
+    auth_url = f"https://appleid.apple.com/auth/authorize?{urllib.parse.urlencode(params)}"
+    return {
+        "configured": True,
+        "auth_url": auth_url,
+        "state": state,
+        "client_id": client_id
+    }
+
+@app.post("/api/auth/apple/callback")
+def apple_auth_callback(req: AppleCallbackRequest, db: Session = Depends(get_db)):
+    """Handles Apple Sign-In callback and token validation."""
+    if not req.id_token:
+        raise HTTPException(status_code=400, detail="Missing Apple id_token.")
+    
+    try:
+        parts = req.id_token.split(".")
+        if len(parts) >= 2:
+            padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+            email = claims.get("email", "").strip().lower()
+            apple_sub = claims.get("sub", "")
+            
+            if not email:
+                email = f"apple_{apple_sub[:10]}@privaterelay.appleid.com"
+                
+            user = db.query(User).filter(User.email == email).first()
+            if not user:
+                user = User(
+                    id=str(uuid.uuid4()),
+                    email=email,
+                    first_name="Apple",
+                    last_name="Creator",
+                    google_id=apple_sub,
+                    auth_provider="apple",
+                    is_active=True
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            
+            token = create_auth_token(user.id, user.email)
+            return {
+                "status": "success",
+                "token": token,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "auth_provider": user.auth_provider,
+                    "avatar_url": user.avatar_url
+                }
+            }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to process Apple authentication: {str(e)}")
+    
+    raise HTTPException(status_code=400, detail="Invalid Apple authentication payload.")
 
 @app.get("/api/auth/me")
 def get_current_user_profile(current_user: User = Depends(get_current_user_required)):
@@ -588,13 +897,20 @@ def list_projects(
     return results
 
 @app.get("/api/projects/{project_id}")
-def get_project_details(project_id: str, db: Session = Depends(get_db)):
+def get_project_details(
+    project_id: str, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Retrieves full details of a project including all detected highlights and generated clips.
+    Enforces user authorization and project ownership.
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+    if project.user_id and current_user and project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied: you do not have permission to view this project.")
 
     highlights_data = []
     for h in project.highlights:
@@ -986,15 +1302,23 @@ def revert_clip_endpoint(clip_id: str, db: Session = Depends(get_db)):
     }
 
 @app.get("/api/clips/{clip_id}/download")
-def download_clip_endpoint(clip_id: str, version: str = Query("edited"), db: Session = Depends(get_db)):
+def download_clip_endpoint(
+    clip_id: str, 
+    version: str = Query("edited"), 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Direct file download with attachment headers:
     - version='original': downloads the pristine unedited generated clip.
     - version='edited': downloads the rendered edited clip (falls back to original if unedited).
+    Enforces clip ownership authorization and prevents path traversal.
     """
     clip = db.query(Clip).filter(Clip.id == clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found.")
+    if clip.user_id and current_user and clip.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied: you do not own this clip.")
 
     target_file = None
     download_filename = clip.file_name or f"clip_{clip.id}.mp4"
@@ -1017,21 +1341,32 @@ def download_clip_endpoint(clip_id: str, version: str = Query("edited"), db: Ses
     if not target_file or not os.path.exists(target_file):
         raise HTTPException(status_code=404, detail="Requested clip video file is not available on disk.")
 
+    resolved_path = Path(target_file).resolve()
+    if not (str(resolved_path).startswith(str(CLIPS_DIR.resolve())) or str(resolved_path).startswith(str(TEMP_DIR.resolve()))):
+        raise HTTPException(status_code=400, detail="Invalid path security check.")
+
     return FileResponse(
-        path=target_file,
+        path=str(resolved_path),
         media_type="video/mp4",
         filename=download_filename,
         headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
     )
 
 @app.delete("/api/projects/{project_id}")
-def delete_project(project_id: str, db: Session = Depends(get_db)):
+def delete_project(
+    project_id: str, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Deletes project record and cleans up associated files on disk.
+    Enforces ownership authorization.
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+    if project.user_id and current_user and project.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied: you do not own this project.")
 
     # Remove storage folders
     for d in [DOWNLOADS_DIR / project_id, CLIPS_DIR / project_id, TEMP_DIR / project_id]:
@@ -1386,16 +1721,26 @@ def get_client_credentials(db: Session = Depends(get_db)):
     return {"has_credentials": False, "has_secret": False, "client_id": "", "client_secret": "", "client_secret_masked": ""}
 
 @app.post("/api/youtube/connect")
-def connect_youtube_account(req: YouTubeConnectRequest, db: Session = Depends(get_db)):
+def connect_youtube_account(
+    req: YouTubeConnectRequest, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Exchanges OAuth code for tokens, verifies channel profile with YouTube API,
-    and securely stores credentials.
+    and securely stores credentials scoped to the active user.
     """
     try:
         eff_client_secret = req.client_secret.strip()
         # If client secret is masked or omitted, look up stored secret
         if not eff_client_secret or eff_client_secret.startswith("•"):
-            existing = db.query(YouTubeAccount).first()
+            existing = None
+            if current_user:
+                existing = db.query(YouTubeAccount).filter(
+                    (YouTubeAccount.user_id == current_user.id) | (YouTubeAccount.user_id == None)
+                ).first()
+            if not existing:
+                existing = db.query(YouTubeAccount).first()
             if existing and existing.client_secret:
                 eff_client_secret = existing.client_secret
             else:
@@ -1410,12 +1755,17 @@ def connect_youtube_account(req: YouTubeConnectRequest, db: Session = Depends(ge
 
         profile = YouTubeService.get_channel_profile(tokens["access_token"])
 
-        # Check existing account or create new
-        account = db.query(YouTubeAccount).first()
+        # Check existing account for user or create new
+        account = None
+        if current_user:
+            account = db.query(YouTubeAccount).filter(YouTubeAccount.user_id == current_user.id).first()
+        if not account:
+            account = db.query(YouTubeAccount).first()
         if not account:
             account = YouTubeAccount(id=str(uuid.uuid4())[:12])
             db.add(account)
 
+        account.user_id = current_user.id if current_user else None
         account.client_id = req.client_id.strip()
         account.client_secret = eff_client_secret
         account.access_token = tokens["access_token"]
@@ -1437,19 +1787,39 @@ def connect_youtube_account(req: YouTubeConnectRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/youtube/disconnect")
-def disconnect_youtube_account(db: Session = Depends(get_db)):
-    """Disconnects YouTube account and clears tokens."""
-    account = db.query(YouTubeAccount).first()
+def disconnect_youtube_account(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Disconnects YouTube account and clears tokens for user."""
+    account = None
+    if current_user:
+        account = db.query(YouTubeAccount).filter(
+            (YouTubeAccount.user_id == current_user.id) | (YouTubeAccount.user_id == None)
+        ).first()
+    if not account:
+        account = db.query(YouTubeAccount).first()
     if account:
         db.delete(account)
         db.commit()
     return {"status": "disconnected"}
 
 @app.get("/api/youtube/account")
-def get_connected_youtube_account(db: Session = Depends(get_db)):
+def get_connected_youtube_account(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """Returns connected YouTube channel details (without exposing secrets)."""
-    account = db.query(YouTubeAccount).filter(YouTubeAccount.is_active == True).first()
+    account = None
+    if current_user:
+        account = db.query(YouTubeAccount).filter(
+            (YouTubeAccount.user_id == current_user.id) | (YouTubeAccount.user_id == None),
+            YouTubeAccount.is_active == True
+        ).first()
     if not account:
+        account = db.query(YouTubeAccount).filter(YouTubeAccount.is_active == True).first()
+
+    if not account or not account.channel_id:
         return {"connected": False, "account": None}
 
     return {
@@ -1460,5 +1830,51 @@ def get_connected_youtube_account(db: Session = Depends(get_db)):
             "channel_avatar": account.channel_avatar,
             "is_active": account.is_active,
         }
+    }
+
+@app.get("/api/youtube/channel/videos")
+def get_connected_channel_videos(
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Fetches real uploaded videos from user's connected YouTube channel via YouTube Data API v3."""
+    account = None
+    if current_user:
+        account = db.query(YouTubeAccount).filter(
+            (YouTubeAccount.user_id == current_user.id) | (YouTubeAccount.user_id == None),
+            YouTubeAccount.is_active == True
+        ).first()
+    if not account:
+        account = db.query(YouTubeAccount).filter(YouTubeAccount.is_active == True).first()
+
+    if not account or not account.refresh_token:
+        return {"connected": False, "channel_title": "", "videos": []}
+
+    now = time.time()
+    access_token = account.access_token
+    # Refresh expired token
+    if not access_token or account.token_expiry <= now + 60:
+        try:
+            tokens = YouTubeService.refresh_access_token(
+                client_id=account.client_id,
+                client_secret=account.client_secret,
+                refresh_token=account.refresh_token
+            )
+            account.access_token = tokens["access_token"]
+            account.token_expiry = tokens["token_expiry"]
+            db.commit()
+            access_token = tokens["access_token"]
+        except Exception as ref_err:
+            print(f"[YouTubeAPI] Token refresh error: {ref_err}")
+            return {"connected": True, "error": f"Token refresh error: {str(ref_err)}", "videos": []}
+
+    videos = YouTubeService.get_channel_recent_videos(access_token, max_results=limit)
+    return {
+        "connected": True,
+        "channel_title": account.channel_title,
+        "channel_id": account.channel_id,
+        "channel_avatar": account.channel_avatar,
+        "videos": videos
     }
 

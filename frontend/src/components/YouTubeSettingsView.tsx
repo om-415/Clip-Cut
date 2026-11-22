@@ -26,7 +26,8 @@ import {
   disconnectYouTubeAccount,
   fetchConnectedYouTubeAccount,
   saveClientCredentials,
-  fetchClientCredentials
+  fetchClientCredentials,
+  fetchChannelVideos
 } from '../api';
 import { YouTubeAccountInfo, PublishingSettingsData } from '../types';
 
@@ -43,8 +44,14 @@ export const YouTubeSettingsView: React.FC = () => {
   const [clientId, setClientId] = useState(() => localStorage.getItem('yt_oauth_client_id') || '');
   const [clientSecret, setClientSecret] = useState(() => localStorage.getItem('yt_oauth_client_secret') || '');
   const [authCode, setAuthCode] = useState('');
-  const [redirectUri, setRedirectUri] = useState('http://localhost:3000/oauth-callback');
+  const [redirectUri, setRedirectUri] = useState(() => {
+    return typeof window !== 'undefined'
+      ? `${window.location.origin}/oauth-callback`
+      : 'http://localhost:3000/oauth-callback';
+  });
   const [copiedRedirect, setCopiedRedirect] = useState(false);
+  const [channelVideos, setChannelVideos] = useState<any[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
 
   // Publishing settings state
   const [settings, setSettings] = useState<PublishingSettingsData>({
@@ -89,8 +96,10 @@ export const YouTubeSettingsView: React.FC = () => {
 
       if (accRes && accRes.connected && accRes.account) {
         setAccount(accRes.account);
+        loadVideos();
       } else {
         setAccount(null);
+        setChannelVideos([]);
       }
 
       // Restore credentials from backend if not in localStorage
@@ -124,10 +133,13 @@ export const YouTubeSettingsView: React.FC = () => {
         }
       }
 
-      // Check URL for OAuth code redirect (e.g. /oauth-callback?code=4/0A...)
+      // Check URL for YouTube OAuth code redirect (e.g. /oauth-callback?code=4/0A...)
       const urlParams = new URLSearchParams(window.location.search);
       const codeFromUrl = urlParams.get('code');
-      if (codeFromUrl) {
+      const stateFromUrl = urlParams.get('state') || '';
+
+      // Ignore if state belongs to ClipCut User Authentication
+      if (codeFromUrl && !stateFromUrl.startsWith('clipcut_auth_')) {
         setAuthCode(codeFromUrl);
         // If we have credentials (locally or stored on server), automatically complete connection!
         if (effectiveClientId && (effectiveClientSecret || credRes?.has_secret)) {
@@ -143,6 +155,20 @@ export const YouTubeSettingsView: React.FC = () => {
       console.error('Failed to load settings:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadVideos = async () => {
+    setLoadingVideos(true);
+    try {
+      const res = await fetchChannelVideos(8);
+      if (res && res.videos) {
+        setChannelVideos(res.videos);
+      }
+    } catch (err) {
+      console.warn('Channel videos notice:', err);
+    } finally {
+      setLoadingVideos(false);
     }
   };
 
@@ -165,6 +191,7 @@ export const YouTubeSettingsView: React.FC = () => {
       });
       setAuthCode('');
       setStatusMessage({ type: 'success', text: `Successfully connected YouTube channel: ${res.channel_title}!` });
+      loadVideos();
 
       // Clean the URL query parameters so code is not reused
       if (window.history && window.history.replaceState) {
@@ -346,43 +373,139 @@ export const YouTubeSettingsView: React.FC = () => {
         </div>
 
         {account ? (
-          /* Connected Channel Card */
-          <div className="p-5 rounded-2xl bg-surface-primary border border-border-subtle flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
-            <div className="flex items-center gap-4">
-              {account.channel_avatar ? (
-                <img 
-                  src={account.channel_avatar} 
-                  alt={account.channel_title} 
-                  className="w-14 h-14 rounded-full border border-border-strong object-cover" 
-                />
-              ) : (
-                <div className="w-14 h-14 rounded-full bg-red-600/20 text-red-400 border border-red-500/30 flex items-center justify-center font-bold text-xl">
-                  {account.channel_title.charAt(0)}
-                </div>
-              )}
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-bold text-slate-100">{account.channel_title}</h3>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-red-500/10 text-red-400 border border-red-500/20">
-                    Channel Owner
-                  </span>
-                </div>
-                <p className="text-xs font-mono text-slate-400 mt-0.5">ID: {account.channel_id}</p>
-                <div className="flex items-center gap-2 mt-2 text-[11px] text-emerald-400">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>OAuth 2.0 Token Valid &bull; Ready for Resumable Uploads</span>
+          <>
+            {/* Connected Channel Card */}
+            <div className="p-5 rounded-2xl bg-surface-primary border border-border-subtle flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
+              <div className="flex items-center gap-4">
+                {account.channel_avatar ? (
+                  <img 
+                    src={account.channel_avatar} 
+                    alt={account.channel_title} 
+                    className="w-14 h-14 rounded-full border border-border-strong object-cover" 
+                  />
+                ) : (
+                  <div className="w-14 h-14 rounded-full bg-red-600/20 text-red-400 border border-red-500/30 flex items-center justify-center font-bold text-xl">
+                    {account.channel_title.charAt(0)}
+                  </div>
+                )}
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-100">{account.channel_title}</h3>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-red-500/10 text-red-400 border border-red-500/20">
+                      Channel Owner
+                    </span>
+                  </div>
+                  <p className="text-xs font-mono text-slate-400 mt-0.5">ID: {account.channel_id}</p>
+                  <div className="flex items-center gap-2 mt-2 text-[11px] text-emerald-400">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>OAuth 2.0 Token Valid &bull; Ready for Resumable Uploads</span>
+                  </div>
                 </div>
               </div>
+
+              <button
+                onClick={handleDisconnect}
+                className="px-4 py-2.5 rounded-xl border border-red-500/30 hover:bg-red-500/10 text-red-400 hover:text-red-300 text-xs font-semibold flex items-center gap-2 transition-all self-end sm:self-center"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Disconnect Channel</span>
+              </button>
             </div>
 
-            <button
-              onClick={handleDisconnect}
-              className="px-4 py-2.5 rounded-xl border border-red-500/30 hover:bg-red-500/10 text-red-400 hover:text-red-300 text-xs font-semibold flex items-center gap-2 transition-all self-end sm:self-center"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Disconnect Channel</span>
-            </button>
-          </div>
+            {/* Real Channel Videos Showcase */}
+            <div className="pt-2 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                    <Youtube className="w-4 h-4 text-red-500" />
+                    <span>Recent Uploads on {account.channel_title}</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Live uploads retrieved via official YouTube Data API v3.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono">
+                    Live Channel Feed
+                  </span>
+                  <button
+                    type="button"
+                    onClick={loadVideos}
+                    disabled={loadingVideos}
+                    className="text-[11px] text-slate-400 hover:text-white underline underline-offset-2 disabled:opacity-50"
+                  >
+                    {loadingVideos ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Architecture Explanatory Notice */}
+              <div className="p-3.5 rounded-xl bg-surface-secondary/70 border border-border-subtle text-xs text-slate-300 flex items-start gap-3">
+                <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-semibold text-slate-200">Channel Uploads vs. Autonomous Publishing Queue</span>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    The videos below are existing uploads on your YouTube channel. AI clips generated by ClipCut are staged in your <strong className="text-indigo-300">Publishing Queue</strong> before being uploaded according to your schedule.
+                  </p>
+                </div>
+              </div>
+
+              {loadingVideos ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="rounded-xl bg-surface-secondary border border-border-subtle p-3 space-y-2 animate-pulse">
+                      <div className="w-full aspect-video rounded-lg bg-surface-tertiary" />
+                      <div className="h-3 bg-surface-tertiary rounded w-3/4" />
+                      <div className="h-2.5 bg-surface-tertiary rounded w-1/2" />
+                    </div>
+                  ))}
+                </div>
+              ) : channelVideos.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3.5">
+                  {channelVideos.map((video) => (
+                    <div 
+                      key={video.video_id}
+                      className="group rounded-xl bg-surface-primary hover:bg-surface-secondary border border-border-subtle hover:border-border-strong p-3 transition-all flex flex-col justify-between"
+                    >
+                      <div className="space-y-2">
+                        <div className="relative aspect-video rounded-lg overflow-hidden bg-black border border-white/5">
+                          <img 
+                            src={video.thumbnail_url} 
+                            alt={video.title} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                          <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase bg-black/80 text-slate-200 backdrop-blur-sm">
+                            {video.status || 'Public'}
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-semibold text-slate-200 line-clamp-2 group-hover:text-white transition-colors" title={video.title}>
+                          {video.title}
+                        </h4>
+                      </div>
+
+                      <div className="pt-2.5 mt-2 border-t border-border-subtle flex items-center justify-between text-[10px] text-slate-400">
+                        <span>{video.published_at ? new Date(video.published_at).toLocaleDateString() : ''}</span>
+                        <a 
+                          href={video.youtube_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium"
+                        >
+                          <span>View</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 rounded-xl bg-surface-secondary/40 border border-dashed border-border-subtle text-slate-400 text-xs">
+                  No recent uploads found on this channel yet. Use the Autonomous Pipeline to create and schedule your first clip!
+                </div>
+              )}
+            </div>
+          </>
         ) : (
           /* OAuth 2.0 Setup Guide & Form */
           <div className="space-y-6">

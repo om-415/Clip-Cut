@@ -120,6 +120,7 @@ class YouTubeAccount(Base):
     __tablename__ = "youtube_accounts"
 
     id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     channel_id = Column(String(100), nullable=True)
     channel_title = Column(String(255), default="My Channel")
     channel_avatar = Column(Text, nullable=True)
@@ -131,6 +132,8 @@ class YouTubeAccount(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User")
 
 
 class UploadQueueItem(Base):

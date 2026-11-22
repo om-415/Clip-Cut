@@ -12,34 +12,22 @@ import { UploadQueueView } from './components/UploadQueueView';
 import { YouTubeSettingsView } from './components/YouTubeSettingsView';
 import { AuthView } from './components/AuthView';
 import { Project, User } from './types';
-import { getProject, listProjects, listAllClips, fetchQueueItems, getStoredUser, setStoredUser, logoutAccount } from './api';
+import { 
+  getProject, 
+  listProjects, 
+  listAllClips, 
+  fetchQueueItems, 
+  getStoredUser, 
+  setStoredUser, 
+  logoutAccount,
+  exchangeGoogleCode 
+} from './api';
 
 export const App: React.FC = () => {
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const stored = getStoredUser();
-    if (stored) return stored;
-    // If returning from OAuth callback, ensure active creator session exists so channel links seamlessly
-    if (typeof window !== 'undefined' && (window.location.pathname.includes('oauth-callback') || window.location.search.includes('code='))) {
-      const defaultUser: User = {
-        id: 'user_primary',
-        email: 'creator@clipcut.ai',
-        first_name: 'ClipCut',
-        last_name: 'Creator',
-        auth_provider: 'google'
-      };
-      setStoredUser(defaultUser);
-      return defaultUser;
-    }
-    return null;
-  });
-  const [currentTab, setCurrentTab] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      if (window.location.pathname.includes('oauth-callback') || window.location.search.includes('code=')) {
-        return 'youtube_settings';
-      }
-    }
-    return 'new';
-  });
+  const [currentUser, setCurrentUser] = useState<User | null>(() => getStoredUser());
+  const [authProcessing, setAuthProcessing] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [currentTab, setCurrentTab] = useState<string>('new');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [projectCount, setProjectCount] = useState<number>(0);
@@ -48,6 +36,44 @@ export const App: React.FC = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  useEffect(() => {
+    const handleOAuthRedirect = async () => {
+      if (typeof window === 'undefined') return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+      const state = urlParams.get('state') || '';
+
+      if (!code) return;
+
+      // Case 1: ClipCut Google User Login redirect
+      if (state.startsWith('clipcut_auth_') || window.location.pathname.includes('/auth/google/callback')) {
+        setAuthProcessing(true);
+        setAuthError(null);
+        try {
+          const redirectUri = `${window.location.origin}/auth/google/callback`;
+          const res = await exchangeGoogleCode(code, redirectUri, state);
+          setCurrentUser(res.user);
+          // Clean the browser address bar
+          window.history.replaceState({}, document.title, '/');
+          setCurrentTab('new');
+        } catch (err: any) {
+          console.error('Google OAuth exchange error:', err);
+          setAuthError(err.message || 'Failed to complete Google sign-in. Please log in manually.');
+        } finally {
+          setAuthProcessing(false);
+        }
+        return;
+      }
+
+      // Case 2: YouTube channel OAuth redirect
+      if (window.location.pathname.includes('oauth-callback') || state.includes('stream_clipper')) {
+        setCurrentTab('youtube_settings');
+      }
+    };
+
+    handleOAuthRedirect();
+  }, []);
 
   const loadProjectData = async (id: string) => {
     try {
@@ -137,12 +163,30 @@ export const App: React.FC = () => {
     refreshCounts();
   };
 
+  // OAuth Processing Screen
+  if (authProcessing) {
+    return (
+      <div className="min-h-screen bg-[#050508] flex flex-col items-center justify-center p-6 text-slate-100">
+        <div className="flex flex-col items-center gap-4 animate-in fade-in zoom-in-95">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center shadow-lg shadow-indigo-600/30">
+            <span className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+          <div className="text-center space-y-1">
+            <h2 className="text-lg font-bold text-white tracking-tight">Authenticating with Google...</h2>
+            <p className="text-xs text-slate-400">Verifying session token and loading your ClipCut workspace</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // If user is not authenticated, render Login / Sign-up view
   if (!currentUser) {
     return (
       <AuthView
         onSuccess={handleAuthSuccess}
         onExploreAsGuest={handleExploreAsGuest}
+        initialError={authError}
       />
     );
   }
