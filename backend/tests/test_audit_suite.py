@@ -43,6 +43,14 @@ class TestAuditSuite(unittest.TestCase):
         url2 = "https://youtu.be/dQw4w9WgXcQ"
         self.assertIn("youtube.com/watch?v=dQw4w9WgXcQ", VideoService.validate_source_url(url2))
 
+    def test_metadata_extraction_with_mobile_client(self):
+        """Must extract YouTube metadata without bot-check block."""
+        res = VideoService.get_youtube_metadata("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertIn("title", res)
+        self.assertIn("channel", res)
+        self.assertIn("thumbnail", res)
+        self.assertGreaterEqual(res["duration"], 0)
+
     # =========================================================================
     # 2. System Info & Hardware Detection Tests
     # =========================================================================

@@ -12,6 +12,44 @@ class VideoService:
     _metadata_cache: Dict[str, Dict[str, Any]] = {}
 
     @classmethod
+    def _build_ydl_opts(cls, extra_opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Builds robust yt-dlp configuration that emulates Android & iOS mobile client APIs
+        to bypass YouTube's 'Sign in to confirm you're not a bot' web scraper challenge.
+        Automatically attaches cookies.txt if present in the workspace.
+        """
+        opts: Dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "web"]
+                }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+        }
+        # Check for cookies.txt in workspace if user provided one
+        for c_file in ["cookies.txt", "youtube_cookies.txt"]:
+            c_path = Path(c_file)
+            if c_path.exists() and c_path.stat().st_size > 0:
+                opts["cookiefile"] = str(c_path.resolve())
+                break
+            try:
+                base_c = TEMP_DIR.parent / c_file
+                if base_c.exists() and base_c.stat().st_size > 0:
+                    opts["cookiefile"] = str(base_c.resolve())
+                    break
+            except Exception:
+                pass
+
+        if extra_opts:
+            opts.update(extra_opts)
+        return opts
+
+    @classmethod
     def validate_source_url(cls, url: str) -> str:
         """
         SSRF & Injection Security Guard:
@@ -79,8 +117,8 @@ class VideoService:
     @classmethod
     def get_youtube_metadata(cls, url: str) -> Dict[str, Any]:
         """
-        Extracts metadata from YouTube URL using yt-dlp without downloading.
-        Handles unavailable or restricted videos gracefully with in-memory caching.
+        Extracts metadata from YouTube URL using yt-dlp with mobile client emulation.
+        Handles unavailable or bot-restricted videos gracefully with in-memory caching and oEmbed fallback.
         Enforces SSRF and protocol security checks.
         """
         clean_url = cls.validate_source_url(url)
@@ -89,12 +127,10 @@ class VideoService:
         if url.strip() in cls._metadata_cache:
             return cls._metadata_cache[url.strip()]
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
+        ydl_opts = cls._build_ydl_opts({
             "skip_download": True,
             "extract_flat": False,
-        }
+        })
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(clean_url, download=False)
@@ -121,10 +157,38 @@ class VideoService:
                 cls._metadata_cache[clean_url] = res
                 cls._metadata_cache[url.strip()] = res
                 return res
-        except yt_dlp.utils.DownloadError as e:
-            raise RuntimeError(f"YouTube metadata extraction failed: {str(e)}")
         except Exception as e:
-            raise RuntimeError(f"Unexpected error retrieving video info: {str(e)}")
+            err_str = str(e)
+            print(f"[VideoService] Primary yt-dlp metadata extraction notice: {err_str}")
+            # Resilient Tier 2: YouTube oEmbed API Fallback for metadata
+            try:
+                import re
+                import urllib.request
+                import urllib.parse
+                import json
+                m = re.search(r'(?:v=|/live/|youtu\.be/|/shorts/)([a-zA-Z0-9_-]{11})', clean_url)
+                v_id = m.group(1) if m else ""
+                oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(clean_url)}&format=json"
+                req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    oe = json.loads(resp.read().decode("utf-8"))
+                    res = {
+                        "title": oe.get("title", "YouTube Video"),
+                        "channel": oe.get("author_name", "Creator"),
+                        "duration": 0.0,
+                        "thumbnail": oe.get("thumbnail_url") or (f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg" if v_id else ""),
+                        "view_count": 0,
+                        "description": "",
+                        "url": clean_url,
+                        "is_live": False,
+                    }
+                    cls._metadata_cache[clean_url] = res
+                    cls._metadata_cache[url.strip()] = res
+                    return res
+            except Exception as oe_err:
+                print(f"[VideoService] oEmbed fallback notice: {oe_err}")
+
+            raise RuntimeError(f"YouTube metadata extraction failed: {err_str}")
 
     @classmethod
     def download_youtube_video(cls, url: str, output_dir: Path, progress_callback=None) -> Path:
@@ -145,14 +209,12 @@ class VideoService:
                 speed = d.get("speed", 0)
                 progress_callback(percent, speed)
 
-        ydl_opts = {
-            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[ext=mp4]/best",
+        ydl_opts = cls._build_ydl_opts({
+            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[ext=mp4]/best/18",
             "outtmpl": output_template,
             "merge_output_format": "mp4",
-            "quiet": True,
-            "no_warnings": True,
             "progress_hooks": [hook],
-        }
+        })
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -192,13 +254,11 @@ class VideoService:
                 percent = (downloaded / total * 100) if total > 0 else 0
                 progress_callback(percent, d.get("speed", 0))
 
-        ydl_opts = {
-            "format": "ba[ext=m4a]/ba/bestaudio",
+        ydl_opts = cls._build_ydl_opts({
+            "format": "ba[ext=m4a]/ba/ba*/b/best/18",
             "outtmpl": out_tmpl,
-            "quiet": True,
-            "no_warnings": True,
             "progress_hooks": [hook],
-        }
+        })
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -243,16 +303,14 @@ class VideoService:
         temp_out = output_path.parent / f"raw_sec_{int(start_sec)}_{int(end_sec)}.mp4"
 
         # Tier 1: yt-dlp range download with accurate keyframe cuts
-        ydl_opts = {
-            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
+        ydl_opts = cls._build_ydl_opts({
+            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best/18",
             "download_ranges": download_range_func(None, [(max(0.0, start_sec - 1.0), end_sec + 1.0)]),
             "force_keyframes_at_cuts": True,
             "outtmpl": str(temp_out),
             "merge_output_format": "mp4",
-            "quiet": True,
-            "no_warnings": True,
             "ignoreerrors": True,
-        }
+        })
 
         download_success = False
         try:
@@ -278,7 +336,7 @@ class VideoService:
         if not download_success or not found_file:
             try:
                 print(f"[VideoService] Attempting Tier 2 robust stream slice for range {start_sec}-{end_sec}...")
-                ydl_opts_info = {"quiet": True, "no_warnings": True, "format": "best[height<=1080]/best"}
+                ydl_opts_info = cls._build_ydl_opts({"format": "best[height<=1080]/best/18"})
                 with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
                     info = ydl.extract_info(clean_url, download=False)
                     stream_url = info.get("url")
